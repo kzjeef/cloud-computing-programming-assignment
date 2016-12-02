@@ -42,6 +42,10 @@ public:
 		memcpy(&addr[0], &id, sizeof(int));
 		memcpy(&addr[4], &port, sizeof(short));
 	}
+    Address(int id, short port) {
+        memcpy(&addr[0], &id, sizeof(int));
+        memcpy(&addr[4], &port, sizeof(short));
+    }
 	string getAddress() {
 		int id = 0;
 		short port;
@@ -91,6 +95,7 @@ public:
 	void setport(short port);
 	void setheartbeat(long hearbeat);
 	void settimestamp(long timestamp);
+  bool hasMarkFail(int cur_time, int tfail);
 };
 
 /**

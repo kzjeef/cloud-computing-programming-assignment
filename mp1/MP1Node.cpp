@@ -96,8 +96,8 @@ int MP1Node::initThisNode(Address *joinaddr) {
 	/*
 	 * This function is partially implemented and may require changes
 	 */
-	int id = *(int*)(&memberNode->addr.addr);
-	int port = *(short*)(&memberNode->addr.addr[4]);
+	/* int id = *(int*)(&memberNode->addr.addr); */
+	/* int port = *(short*)(&memberNode->addr.addr[4]); */
 
 	memberNode->bFailed = false;
 	memberNode->inited = true;
@@ -140,7 +140,7 @@ int MP1Node::introduceSelfToGroup(Address *joinaddr) {
         memcpy((char *)(msg+1) + 1 + sizeof(memberNode->addr.addr), &memberNode->heartbeat, sizeof(long));
 
 #ifdef DEBUGLOG
-        sprintf(s, "Trying to join... size:%d", msgsize);
+        sprintf(s, "[MSG] send JOINREQ to :%s " , joinaddr->getAddress().c_str());
         log->LOG(&memberNode->addr, s);
 #endif
         // send JOINREQ message to introducer member
@@ -162,6 +162,8 @@ int MP1Node::finishUpThisNode(){
    /*
     * Your code goes here
     */
+
+
 }
 
 /**
@@ -208,6 +210,21 @@ void MP1Node::checkMessages() {
     return;
 }
 
+std::unique_ptr<MessageSelfInfo>
+parseHeaderInfo(char *afterHeader) {
+    std::unique_ptr<MessageSelfInfo> joinReq(new MessageSelfInfo);
+    memcpy(joinReq->addr_, afterHeader, 6);
+    memcpy(&joinReq->heartbeat_, afterHeader + 6, sizeof(long));
+    return joinReq;
+}
+
+unique_ptr<Address>
+getSenderAddress(std::unique_ptr<MessageSelfInfo> &info) {
+    std::unique_ptr<Address> addr(new Address());
+    memcpy(addr->addr, info->addr_, 6);
+    return addr;
+}
+
 /**
  * FUNCTION NAME: recvCallBack
  *
@@ -218,30 +235,30 @@ bool MP1Node::recvCallBack(void *env, char *data, int size ) {
 	 * Your code goes here
 	 */
 
-    log->LOG(&memberNode->addr, "got recvCallback: size%d want size:%d  hdr:%d",
-             size,
-             sizeof(MessageJoinRequest),
-             sizeof(MessageHdr));
+
+    
 
     MessageHdr *header = (MessageHdr *)data;
+    char *afterHeader = (char *)data + sizeof(MessageHdr);
+
+#ifdef DEBUGLOG
+    log->LOG(&memberNode->addr, "[MSG] got message: type:%d size:%d",
+             header->msgType, size);
+#endif
+
     if (header->msgType == JOINREQ) {
         assert(size - sizeof(MessageHdr) - 1 == (sizeof(long) + 6));
         
-        MessageJoinRequest *joinReq = new MessageJoinRequest();
+        std::unique_ptr<MessageSelfInfo> joinReq(new MessageSelfInfo);
 
-        char *afterHeader = (char *)data + sizeof(MessageHdr);
         memcpy(joinReq->addr_, afterHeader, 6);
         memcpy(&joinReq->heartbeat_, afterHeader + 6, sizeof(long));
 
-        log->LOG(&memberNode->addr,
-                 "got join request : %d:%d:%d:%d:%d:%d heartBeat:%ld",
-                 joinReq->addr_[0], joinReq->addr_[1], joinReq->addr_[2],
-                 joinReq->addr_[3], joinReq->addr_[4], joinReq->addr_[5],
-                 joinReq->heartbeat_);
-
         Address incomingMsgAddress;
         memcpy(incomingMsgAddress.addr, joinReq->addr_, 6);
-        log->LOG(&memberNode->addr, "got message from :%s" ,incomingMsgAddress.getAddress().c_str());
+#ifdef DEBUGLOG
+        log->LOG(&memberNode->addr, "[COMM] [JOINREQ] message from :%s" ,incomingMsgAddress.getAddress().c_str());
+#endif
         /* when receive from other peer's join request, answer it. and update the local list. */
         /* First search for the member  */
 
@@ -262,34 +279,139 @@ bool MP1Node::recvCallBack(void *env, char *data, int size ) {
                 joinReq->heartbeat_,
                 par->getcurrtime());
             this->memberNode->memberList.push_back(member);
+            log->logNodeAdd(&memberNode->addr, &incomingMsgAddress);
+#ifdef DEBUGLOG
+            log->LOG(&memberNode->addr, "add new member in member list:member %s totalMember:%d"
+                     , incomingMsgAddress.getAddress().c_str(), this->memberNode->memberList.size());
+#endif
 
-            sendJoinReplyToAddress(incomingMsgAddress);
+            sendSimpleMessageToAddress(JOINREP, incomingMsgAddress);
         }
     } else if (header->msgType == JOINREP) {
-        log->LOG(&memberNode->addr, "got join reply");
+        /* receive ping message. */
+        auto senderInfo = parseHeaderInfo(afterHeader);
+        assert(senderInfo.get() != nullptr);
+        auto senderaddr = getSenderAddress(senderInfo);
+#ifdef DEBUGLOG
+        log->LOG(&memberNode->addr, "[COMM] [JOINREP] from :%s", senderaddr->getAddress().c_str());
+#endif
         memberNode->inGroup = true;
+    } else if (header->msgType == PING_AA) {
+        /* receive ping message. */
+        auto senderInfo = parseHeaderInfo(afterHeader);
+        assert(senderInfo.get() != nullptr);
+        auto senderaddr = getSenderAddress(senderInfo);
+
+#ifdef DEBUGLOG
+        log->LOG(&memberNode->addr, "[COMM] [PING_AA] from :%s", senderaddr->getAddress().c_str());
+#endif
+
+        bool haveThisMember = onReceivePingAAMessage(senderaddr, senderInfo);
+        if (haveThisMember)
+            sendSimpleMessageToAddress(PING_AA_REP, *senderaddr);
+        else {
+            MemberListEntry member(
+                senderaddr->getId(),
+                senderaddr->getPort(),
+                senderInfo->heartbeat_,
+                par->getcurrtime());
+
+            this->memberNode->memberList.push_back(member);
+            log->logNodeAdd(&memberNode->addr, senderaddr.get());
+#ifdef DEBUGLOG
+            log->LOG(&memberNode->addr, "add new member in member list:member %s totalMember:%d"
+                     , senderaddr->getAddress().c_str(), this->memberNode->memberList.size());
+#endif
+        }
+
+
+    } else if (header->msgType == PING_AA_REP) {
+        /* we have ping response. */
+        /* update new heartbeat  form peer */
+        auto senderInfo = parseHeaderInfo(afterHeader);
+        assert(senderInfo.get() != nullptr);
+        auto senderaddr = getSenderAddress(senderInfo);
+
+#ifdef DEBUGLOG
+        log->LOG(&memberNode->addr, "[COMM] [PING_AA_REP] from :%s", senderaddr->getAddress().c_str());
+#endif
+
+        onReceivePingAAMessage(senderaddr, senderInfo);
     }
 
     return true;
 }
 
-void MP1Node::sendJoinReplyToAddress(Address &addr) {
+bool
+MP1Node::onReceivePingAAMessage(unique_ptr<Address> &addr, std::unique_ptr<MessageSelfInfo> &senderInfo) {
+    auto it = findMemberListEntryByAddress(addr);
+    if (it == this->memberNode->memberList.end()) {
+        /* Just drop the info */
+#ifdef DEBUGLOG
+        log->LOG(&memberNode->addr, "warning: receive ping message from none member.");
+#endif
+        return false;
+    } else {
+        int old_heartbeat = it->heartbeat;
+        it->heartbeat = std::max(it->heartbeat, senderInfo->heartbeat_);
+        it->timestamp = par->getcurrtime();
+#ifdef DEBUGLOG
+        log->LOG(&memberNode->addr, "update node heartbeat addr:%s     old:%d new:%d "
+                 , addr->getAddress().c_str(), old_heartbeat, it->heartbeat);
+#endif
+        return true;
+    }
+}
+
+vector<MemberListEntry>::iterator
+MP1Node::findMemberListEntryByAddress(const std::unique_ptr<Address> &addr) {
+    auto found_it =
+        std::find_if(this->memberNode->memberList.begin(),
+                     this->memberNode->memberList.end(),
+                     [&addr](const MemberListEntry &entry) -> bool {
+                         return entry.id == addr->getId() &&
+                             entry.port == addr->getPort();
+                     });
+    return found_it;
+}
+
+void MP1Node::sendSimpleMessageToAddress(enum MsgTypes type, Address &addr) {
     MessageHdr *msg;
     size_t msgsize = sizeof(MessageHdr) + sizeof(addr.addr) + sizeof(long) + 1;
     msg = (MessageHdr *) malloc(msgsize * sizeof(char));
-    msg->msgType = JOINREP;
+    msg->msgType = type;
     memcpy((char *)(msg+1), &memberNode->addr.addr, sizeof(memberNode->addr.addr));
     memcpy((char *)(msg+1) + 1 + sizeof(memberNode->addr.addr), &memberNode->heartbeat, sizeof(long));
 
 #ifdef DEBUGLOG
-    static char s[1024];
-    sprintf(s, "reply with join");
-    log->LOG(&memberNode->addr, s);
+    log->LOG(&memberNode->addr, "[MSG] send msg type:%d size:%d", type, msgsize);
 #endif
 
     emulNet->ENsend(&memberNode->addr, &addr, (char *)msg, msgsize);
     free(msg);
 }
+
+typedef vector<char> buffer_t;
+
+template <typename T>
+void pushTypeToVector(const T *p, buffer_t &buf) {
+    const char *ptr =  (const char *)p;
+
+    for (unsigned int i = 0; i < sizeof(*p); i++) {
+        buf.push_back(ptr[i]);
+    }
+}
+
+/* if buffer is not enough, will free original buffer and return new buffer.
+   require buffer is malloced.
+   if use original buffer, just return null.
+ */
+static void pushHeaderToMessage(buffer_t &buf, enum MsgTypes msgType,  Member *member) {
+    pushTypeToVector(&msgType, buf);
+    pushTypeToVector(member->addr.addr, buf);
+    pushTypeToVector(&member->heartbeat, buf);
+ }
+
 /**
  * FUNCTION NAME: nodeLoopOps
  *
@@ -298,11 +420,59 @@ void MP1Node::sendJoinReplyToAddress(Address &addr) {
  * 				Propagate your membership list
  */
 void MP1Node::nodeLoopOps() {
+    /* First increase my heartbeat  */
+    this->memberNode->heartbeat++;
+    
+    /* Send ping message. */
 
-	/*
-	 * Your code goes here
-	 */
+    vector<char> buf(1024);
 
+    pushHeaderToMessage(buf, PING_AA, this->memberNode);
+
+    int member_list_type_cnt = 0;
+
+    for (MemberListEntry &m : this->memberNode->memberList) {
+        if (!m.hasMarkFail(par->getcurrtime(), TFAIL)) {
+            member_list_type_cnt += (sizeof(m.id) + sizeof(m.port) + sizeof(m.heartbeat));
+        }
+    }
+    /* pushTypeToVector(&member_list_type_cnt, buf); */
+    /* for (MemberListEntry &m : this->memberNode->memberList) { */
+    /*     if (!m.hasMarkFail(par->getcurrtime(), TFAIL)) { */
+    /*         pushTypeToVector(&m.id, buf); */
+    /*         pushTypeToVector(&m.port, buf); */
+    /*         pushTypeToVector(&m.heartbeat, buf); */
+    /*     } */
+    /* } */
+
+
+    /* sen ping message to all hist member. */
+    for (MemberListEntry &m : this->memberNode->memberList) {
+        Address toAddr(m.id, m.port);
+        if (!m.hasMarkFail(par->getcurrtime(), TFAIL)) {
+#ifdef DEBUGLOG
+            log->LOG(&memberNode->addr, "[COMM] [PING] send to  %s", toAddr.getAddress().c_str() );
+#endif
+            sendSimpleMessageToAddress(PING_AA, toAddr);
+        }
+    }
+
+//    log->LOG(&memberNode->addr, "before remove %d", this->memberNode->memberList.size());
+    this->memberNode->memberList.erase(remove_if(
+        this->memberNode->memberList.begin(),
+        this->memberNode->memberList.end(), [&](const MemberListEntry &entry) {
+          bool remove = (par->getcurrtime() - entry.timestamp) >= TREMOVE;
+          if (remove) {
+#ifdef DEBUGLOG
+            log->LOG(&memberNode->addr, "will remove addr:%d port:%d", entry.id,
+                     entry.port);
+#endif
+            Address toAddr(entry.id, entry.port);
+            log->logNodeRemove(&this->memberNode->addr, &toAddr);
+          }
+          return remove;
+        }), this->memberNode->memberList.end());
+//    log->LOG(&memberNode->addr, "after remove %d", this->memberNode->memberList.size());
     return;
 }
 

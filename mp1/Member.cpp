@@ -141,6 +141,14 @@ void MemberListEntry::settimestamp(long timestamp) {
 	this->timestamp = timestamp;
 }
 
+bool MemberListEntry::hasMarkFail(int cur_time, int tfail) {
+    assert(this->timestamp <= cur_time);
+
+    if ((cur_time - this->timestamp) >= tfail)
+        return true;
+    return false;
+}
+
 /**
  * Copy Constructor
  */

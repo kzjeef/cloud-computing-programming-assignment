@@ -44,10 +44,9 @@ typedef struct MessageHdr {
 }MessageHdr;
 
 typedef struct MessageJoinRequest {
-    struct MessageHdr hdr_;
     char              addr_[6];
     long              heartbeat_;
-} MessageJoinRequest;
+};
 
 /**
  * CLASS NAME: MP1Node
@@ -81,6 +80,7 @@ public:
 	Address getJoinAddress();
 	void initMemberListTable(Member *memberNode);
 	void printAddress(Address *addr);
+    void sendJoinReplyToAddress(Address &addr);
 	virtual ~MP1Node();
 };
 

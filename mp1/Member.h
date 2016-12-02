@@ -49,8 +49,21 @@ public:
 		memcpy(&port, &addr[4], sizeof(short));
 		return to_string(id) + ":" + to_string(port);
 	}
-	void init() {
-		memset(&addr, 0, sizeof(addr));
+
+    int getId() const {
+        int id = 0;
+        memcpy(&id, &addr[0], sizeof(int));
+        return id;
+    }
+
+    short getPort() const {
+        short port = 0;
+        memcpy(&port, &addr[4], sizeof(short));
+        return port;
+    }
+
+    void init() {
+        memset(&addr, 0, sizeof(addr));
 	}
 };
 

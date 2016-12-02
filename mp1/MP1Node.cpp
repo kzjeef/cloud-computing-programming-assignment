@@ -140,10 +140,9 @@ int MP1Node::introduceSelfToGroup(Address *joinaddr) {
         memcpy((char *)(msg+1) + 1 + sizeof(memberNode->addr.addr), &memberNode->heartbeat, sizeof(long));
 
 #ifdef DEBUGLOG
-        sprintf(s, "Trying to join...");
+        sprintf(s, "Trying to join... size:%d", msgsize);
         log->LOG(&memberNode->addr, s);
 #endif
-
         // send JOINREQ message to introducer member
         emulNet->ENsend(&memberNode->addr, joinaddr, (char *)msg, msgsize);
 
@@ -219,15 +218,78 @@ bool MP1Node::recvCallBack(void *env, char *data, int size ) {
 	 * Your code goes here
 	 */
 
+    log->LOG(&memberNode->addr, "got recvCallback: size%d want size:%d  hdr:%d",
+             size,
+             sizeof(MessageJoinRequest),
+             sizeof(MessageHdr));
+
     MessageHdr *header = (MessageHdr *)data;
     if (header->msgType == JOINREQ) {
-        assert(size == sizeof(MessageJoinRequest));
-        MessageJoinRequest *joinReq = (MessageJoinRequest *)data;
-        log->LOG("got join request : %6s heartBeat:%ld", joinReq->addr_, joinReq.heartBeat);
+        assert(size - sizeof(MessageHdr) - 1 == (sizeof(long) + 6));
+        
+        MessageJoinRequest *joinReq = new MessageJoinRequest();
+
+        char *afterHeader = (char *)data + sizeof(MessageHdr);
+        memcpy(joinReq->addr_, afterHeader, 6);
+        memcpy(&joinReq->heartbeat_, afterHeader + 6, sizeof(long));
+
+        log->LOG(&memberNode->addr,
+                 "got join request : %d:%d:%d:%d:%d:%d heartBeat:%ld",
+                 joinReq->addr_[0], joinReq->addr_[1], joinReq->addr_[2],
+                 joinReq->addr_[3], joinReq->addr_[4], joinReq->addr_[5],
+                 joinReq->heartbeat_);
+
+        Address incomingMsgAddress;
+        memcpy(incomingMsgAddress.addr, joinReq->addr_, 6);
+        log->LOG(&memberNode->addr, "got message from :%s" ,incomingMsgAddress.getAddress().c_str());
+        /* when receive from other peer's join request, answer it. and update the local list. */
+        /* First search for the member  */
+
+        auto found_it =
+            std::find_if(this->memberNode->memberList.begin(),
+                         this->memberNode->memberList.end(),
+                         [incomingMsgAddress](const MemberListEntry &entry) -> bool {
+                           return entry.id == incomingMsgAddress.getId() &&
+                                  entry.port == incomingMsgAddress.getPort();
+                         });
+        if (found_it != this->memberNode->memberList.end()) {
+            found_it->heartbeat = std::max(found_it->heartbeat, joinReq->heartbeat_);
+            found_it->timestamp = par->getcurrtime();
+        } else {
+            MemberListEntry member(
+                incomingMsgAddress.getId(),
+                incomingMsgAddress.getPort(),
+                joinReq->heartbeat_,
+                par->getcurrtime());
+            this->memberNode->memberList.push_back(member);
+
+            sendJoinReplyToAddress(incomingMsgAddress);
+        }
+    } else if (header->msgType == JOINREP) {
+        log->LOG(&memberNode->addr, "got join reply");
+        memberNode->inGroup = true;
     }
 
+    return true;
 }
 
+void MP1Node::sendJoinReplyToAddress(Address &addr) {
+    MessageHdr *msg;
+    size_t msgsize = sizeof(MessageHdr) + sizeof(addr.addr) + sizeof(long) + 1;
+    msg = (MessageHdr *) malloc(msgsize * sizeof(char));
+    msg->msgType = JOINREP;
+    memcpy((char *)(msg+1), &memberNode->addr.addr, sizeof(memberNode->addr.addr));
+    memcpy((char *)(msg+1) + 1 + sizeof(memberNode->addr.addr), &memberNode->heartbeat, sizeof(long));
+
+#ifdef DEBUGLOG
+    static char s[1024];
+    sprintf(s, "reply with join");
+    log->LOG(&memberNode->addr, s);
+#endif
+
+    emulNet->ENsend(&memberNode->addr, &addr, (char *)msg, msgsize);
+    free(msg);
+}
 /**
  * FUNCTION NAME: nodeLoopOps
  *
@@ -280,7 +342,7 @@ void MP1Node::initMemberListTable(Member *memberNode) {
 /**
  * FUNCTION NAME: printAddress
  *
- * DESCRIPTION: Print the Address
+< * DESCRIPTION: Print the Address
  */
 void MP1Node::printAddress(Address *addr)
 {

@@ -113,6 +113,17 @@ void MP1Node::nodeStart(char *servaddrstr, short servport) {
         exit(1);
     }
 
+    // add self into the local member list.
+    MemberListEntry myself(
+            getIdFromAddress(memberNode->addr),
+            getPortFromAddress(memberNode->addr),
+            memberNode->heartbeat,
+            par->getcurrtime());
+
+    memberNode->memberList.push_back(myself);
+    memberNode->myPos = memberNode->memberList.begin();
+
+
     return;
 }
 
@@ -166,11 +177,14 @@ int MP1Node::introduceSelfToGroup(Address *joinaddr) {
         memcpy((char *)(msg+1) + 1 + sizeof(memberNode->addr.addr), &memberNode->heartbeat, sizeof(long));
 
 #ifdef VERBOSE
+        char s[1024];
         sprintf(s, "[MSG] send JOINREQ to :%s " , joinaddr->getAddress().c_str());
         log->LOG(&memberNode->addr, s);
 #endif
         // send JOINREQ message to introducer member
         emulNet->ENsend(&memberNode->addr, joinaddr, (char *)msg, msgsize);
+
+
 
         free(msg);
     }
@@ -251,7 +265,12 @@ getSenderAddress(std::unique_ptr<MessageSelfInfo> &info) {
     return addr;
 }
 
-
+struct MemNodeFast {
+    int id;
+    int port;
+    long heartbeat;
+    int validMember;
+};
 
 /**
  * FUNCTION NAME: recvCallBack
@@ -262,10 +281,6 @@ bool MP1Node::recvCallBack(void *env, char *data, int size ) {
 	/*
 	 * Your code goes here
 	 */
-
-
-    
-
     MessageHdr *header = (MessageHdr *)data;
     char *afterHeader = (char *)data + sizeof(MessageHdr);
 
@@ -314,6 +329,18 @@ bool MP1Node::recvCallBack(void *env, char *data, int size ) {
 #endif
 
             sendSimpleMessageToAddress(JOINREP, incomingMsgAddress);
+
+            /* Rather than reply the sender, also need gossip the join message to all other member he knows. */
+
+            for (const MemberListEntry &entry : memberNode->memberList) {
+                Address  toAddr = makeAddressFrom(entry.id, entry.port);
+                if (toAddr == this->memberNode->addr)
+                    continue;
+                if (toAddr == incomingMsgAddress)
+                    continue;
+                forwardSimpleMessage(JOINREQ, toAddr, incomingMsgAddress, joinReq->heartbeat_);
+            }
+
         }
     } else if (header->msgType == JOINREP) {
         /* receive ping message. */
@@ -334,6 +361,8 @@ bool MP1Node::recvCallBack(void *env, char *data, int size ) {
         log->LOG(&memberNode->addr, "[COMM] [PING_AA] from :%s", senderaddr->getAddress().c_str());
 #endif
 
+
+#if 0
         bool haveThisMember = onReceivePingAAMessage(senderaddr, senderInfo);
         if (haveThisMember)
             sendSimpleMessageToAddress(PING_AA_REP, *senderaddr);
@@ -351,6 +380,59 @@ bool MP1Node::recvCallBack(void *env, char *data, int size ) {
                      , senderaddr->getAddress().c_str(), this->memberNode->memberList.size());
 #endif
         }
+#else
+        char *pcountOfMember = afterHeader + sizeof(long) + 6;
+        int countOfMember = *(int *)pcountOfMember;
+        char *plistOfMember = pcountOfMember + sizeof(int);
+        assert(countOfMember > 0);
+
+        vector<MemNodeFast> foundMember;
+        int memberPkgSize = sizeof(int) + sizeof(int) + sizeof(long) + sizeof(int);
+        char *prunning = plistOfMember;
+        assert((data + size) - pcountOfMember == countOfMember * memberPkgSize + sizeof(int));
+        for (int i = 0; i < countOfMember; i++) {
+            MemNodeFast m;
+            m.id = *(int *)prunning;
+            prunning += sizeof(int);
+            m.port = *(int *)prunning;
+            prunning += sizeof(int);
+            m.heartbeat = *(long *)prunning;
+            prunning += sizeof(long);
+            m.validMember = *(int *) prunning;
+            prunning += sizeof(int);
+            foundMember.push_back(m);
+        }
+
+        /* Do the update. */
+        for (MemNodeFast member : foundMember) {
+            if (!member.validMember)
+                continue;       /* TODO: don't delete it from ours side? */
+            Address addr = makeAddressFrom(member.id, member.port);
+
+            auto it = findMemberListEntryByAddress(addr);
+            if (it == this->memberNode->memberList.end()) {
+                /* XXX: we did the join if found some not is not in our list. */
+                MemberListEntry newEntry(
+                    member.id,
+                    member.port,
+                    member.heartbeat,
+                    par->getcurrtime()
+                    );
+                this->memberNode->memberList.push_back(newEntry);
+                log->logNodeAdd(&memberNode->addr, &addr);
+                continue;
+            }
+            /* also need check, this address is not our self. */
+            if (addr == memberNode->addr)
+                continue;
+
+            it->heartbeat = std::max(it->heartbeat, member.heartbeat);
+            it->timestamp = par->getcurrtime();
+        }
+
+        sendSimpleMessageToAddress(PING_AA_REP, *senderaddr);
+#endif
+
 
 
     } else if (header->msgType == PING_AA_REP) {
@@ -372,7 +454,7 @@ bool MP1Node::recvCallBack(void *env, char *data, int size ) {
 
 bool
 MP1Node::onReceivePingAAMessage(unique_ptr<Address> &addr, std::unique_ptr<MessageSelfInfo> &senderInfo) {
-    auto it = findMemberListEntryByAddress(addr);
+    auto it = findMemberListEntryByAddress(*addr);
     if (it == this->memberNode->memberList.end()) {
         /* Just drop the info */
 #ifdef VERBOSE
@@ -394,16 +476,33 @@ MP1Node::onReceivePingAAMessage(unique_ptr<Address> &addr, std::unique_ptr<Messa
 }
 
 vector<MemberListEntry>::iterator
-MP1Node::findMemberListEntryByAddress(const std::unique_ptr<Address> &addr) {
+MP1Node::findMemberListEntryByAddress(const Address &addr) {
     auto found_it =
         std::find_if(this->memberNode->memberList.begin(),
                      this->memberNode->memberList.end(),
                      [&addr](const MemberListEntry &entry) -> bool {
-                         return entry.id == getIdFromAddress(*addr) &&
-                             entry.port == getPortFromAddress(*addr);
+                         return entry.id == getIdFromAddress(addr) &&
+                             entry.port == getPortFromAddress(addr);
                      });
     return found_it;
 }
+
+void MP1Node::forwardSimpleMessage(enum MsgTypes type, Address &addr, Address &fromAddr, long heartbeat) {
+    MessageHdr *msg;
+    size_t msgsize = sizeof(MessageHdr) + sizeof(addr.addr) + sizeof(long) + 1;
+    msg = (MessageHdr *) malloc(msgsize * sizeof(char));
+    msg->msgType = type;
+    memcpy((char *)(msg+1), fromAddr.addr, 6);
+    memcpy((char *)(msg+1) + 1 + sizeof(memberNode->addr.addr), &heartbeat, sizeof(long));
+
+#ifdef VERBOSE
+    log->LOG(&memberNode->addr, "[MSG] send msg type:%d size:%d", type, msgsize);
+#endif
+
+    emulNet->ENsend(&fromAddr, &addr, (char *)msg, msgsize);
+    free(msg);
+}
+
 
 void MP1Node::sendSimpleMessageToAddress(enum MsgTypes type, Address &addr) {
     MessageHdr *msg;
@@ -424,10 +523,10 @@ void MP1Node::sendSimpleMessageToAddress(enum MsgTypes type, Address &addr) {
 typedef vector<char> buffer_t;
 
 template <typename T>
-void pushTypeToVector(const T *p, buffer_t &buf) {
+void pushTypeToVector(const T *p, int size, buffer_t &buf) {
     const char *ptr =  (const char *)p;
 
-    for (unsigned int i = 0; i < sizeof(*p); i++) {
+    for (unsigned int i = 0; i < size; i++) {
         buf.push_back(ptr[i]);
     }
 }
@@ -437,9 +536,9 @@ void pushTypeToVector(const T *p, buffer_t &buf) {
    if use original buffer, just return null.
  */
 static void pushHeaderToMessage(buffer_t &buf, enum MsgTypes msgType,  Member *member) {
-    pushTypeToVector(&msgType, buf);
-    pushTypeToVector(member->addr.addr, buf);
-    pushTypeToVector(&member->heartbeat, buf);
+    pushTypeToVector(&msgType, sizeof(msgType), buf);
+    pushTypeToVector(member->addr.addr, 6, buf);
+    pushTypeToVector(&member->heartbeat, sizeof(long), buf);
  }
 
 /**
@@ -452,58 +551,63 @@ static void pushHeaderToMessage(buffer_t &buf, enum MsgTypes msgType,  Member *m
 void MP1Node::nodeLoopOps() {
     /* First increase my heartbeat  */
     this->memberNode->heartbeat++;
-    
+
+    // also update heartbeat in our member list.
+    auto self_it = findMemberListEntryByAddress(this->memberNode->addr);
+    assert(self_it != this->memberNode->memberList.end());
+    self_it->heartbeat = this->memberNode->heartbeat;
+    self_it->timestamp = par->getcurrtime();
+
+
+    /* Check there is some dead node */
+
+    //    log->LOG(&memberNode->addr, "before remove %d", this->memberNode->memberList.size());
+    this->memberNode->memberList.erase(remove_if(
+                                           this->memberNode->memberList.begin(),
+                                           this->memberNode->memberList.end(), [&](const MemberListEntry &entry) {
+                                               bool remove = (par->getcurrtime() - entry.timestamp) >= TREMOVE;
+                                               if (remove) {
+#ifdef VERBOSE
+                                                   log->LOG(&memberNode->addr, "will remove addr:%d port:%d", entry.id,
+                                                            entry.port);
+#endif
+                                                   Address toAddr = makeAddressFrom(entry.id, entry.port);
+                                                   log->logNodeRemove(&this->memberNode->addr, &toAddr);
+                                               }
+                                               return remove;
+                                           }), this->memberNode->memberList.end());
+
     /* Send ping message. */
 
-    vector<char> buf(1024);
+
+    vector<char> buf;
 
     pushHeaderToMessage(buf, PING_AA, this->memberNode);
 
-    int member_list_type_cnt = 0;
-
+    int size = (int) this->memberNode->memberList.size();
+    pushTypeToVector(&size, sizeof(int), buf);
     for (MemberListEntry &m : this->memberNode->memberList) {
-        if (!memberEntryhasMarkFail(m, par->getcurrtime(), TFAIL)) {
-            member_list_type_cnt += (sizeof(m.id) + sizeof(m.port) + sizeof(m.heartbeat));
-        }
-    }
-
-    pushTypeToVector(&member_list_type_cnt, buf);
-    for (MemberListEntry &m : this->memberNode->memberList) {
-        if (!memberEntryhasMarkFail(m, par->getcurrtime(), TFAIL)) {
-            pushTypeToVector(&m.id, buf);
-            pushTypeToVector(&m.port, buf);
-            pushTypeToVector(&m.heartbeat, buf);
-        }
+        pushTypeToVector(&m.id, sizeof(int), buf);
+        pushTypeToVector(&m.port, sizeof(int), buf);
+        pushTypeToVector(&m.heartbeat, sizeof(long), buf);
+        int validMember = memberEntryhasMarkFail(m, par->getcurrtime(), TFAIL) ? 0 : 1;
+        pushTypeToVector(&validMember, sizeof(int), buf);
     }
 
     /* sen ping message to all hist member. */
     for (MemberListEntry &m : this->memberNode->memberList) {
         Address toAddr = makeAddressFrom(m.id, m.port);
-        if (!memberEntryhasMarkFail(m, par->getcurrtime(), TFAIL)) {
 #ifdef VERBOSE
             log->LOG(&memberNode->addr, "[COMM] [PING] send to  %s", toAddr.getAddress().c_str() );
 #endif
+        // don't ping self.
+        if (toAddr == memberNode->addr)
+            continue;
 
-            // TODO : 
-            sendSimpleMessageToAddress(PING_AA, toAddr);
-        }
+        emulNet->ENsend(&memberNode->addr, &toAddr, buf.data(), buf.size());
     }
 
-//    log->LOG(&memberNode->addr, "before remove %d", this->memberNode->memberList.size());
-    this->memberNode->memberList.erase(remove_if(
-        this->memberNode->memberList.begin(),
-        this->memberNode->memberList.end(), [&](const MemberListEntry &entry) {
-          bool remove = (par->getcurrtime() - entry.timestamp) >= TREMOVE;
-          if (remove) {
-#ifdef VERBOSE
-            log->LOG(&memberNode->addr, "will remove addr:%d port:%d", entry.id,
-                     entry.port);
-#endif
-            Address toAddr = makeAddressFrom(entry.id, entry.port);
-            log->logNodeRemove(&this->memberNode->addr, &toAddr);
-          }
-          return remove;
-        }), this->memberNode->memberList.end());
+
 //    log->LOG(&memberNode->addr, "after remove %d", this->memberNode->memberList.size());
     return;
 }
@@ -539,6 +643,8 @@ Address MP1Node::getJoinAddress() {
  */
 void MP1Node::initMemberListTable(Member *memberNode) {
 	memberNode->memberList.clear();
+
+
 }
 
 /**

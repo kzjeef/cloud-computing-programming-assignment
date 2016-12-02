@@ -42,10 +42,6 @@ public:
 		memcpy(&addr[0], &id, sizeof(int));
 		memcpy(&addr[4], &port, sizeof(short));
 	}
-    Address(int id, short port) {
-        memcpy(&addr[0], &id, sizeof(int));
-        memcpy(&addr[4], &port, sizeof(short));
-    }
 	string getAddress() {
 		int id = 0;
 		short port;
@@ -53,18 +49,6 @@ public:
 		memcpy(&port, &addr[4], sizeof(short));
 		return to_string(id) + ":" + to_string(port);
 	}
-
-    int getId() const {
-        int id = 0;
-        memcpy(&id, &addr[0], sizeof(int));
-        return id;
-    }
-
-    short getPort() const {
-        short port = 0;
-        memcpy(&port, &addr[4], sizeof(short));
-        return port;
-    }
 
     void init() {
         memset(&addr, 0, sizeof(addr));
@@ -94,8 +78,7 @@ public:
 	void setid(int id);
 	void setport(short port);
 	void setheartbeat(long hearbeat);
-	void settimestamp(long timestamp);
-  bool hasMarkFail(int cur_time, int tfail);
+    void settimestamp(long timestamp);
 };
 
 /**

@@ -14,6 +14,7 @@
 #include "Member.h"
 #include "EmulNet.h"
 #include "Queue.h"
+#include <memory>
 
 /**
  * Macros
@@ -84,10 +85,12 @@ public:
 	void printAddress(Address *addr);
   void sendSimpleMessageToAddress(enum MsgTypes type, Address &addr);
     vector<MemberListEntry>::iterator
-    findMemberListEntryByAddress(const std::unique_ptr<Address> &addr);
+    findMemberListEntryByAddress(const Address &addr);
     bool
     onReceivePingAAMessage(unique_ptr<Address> &addr, std::unique_ptr<MessageSelfInfo> &senderInfo);
 	virtual ~MP1Node();
+
+    void forwardSimpleMessage(MsgTypes type, Address &addr, Address &fromAddr, long heartbeat);
 };
 
 #endif /* _MP1NODE_H_ */

@@ -1,0 +1,6 @@
+*.o
+*.log
+GPATH
+GTAGS
+.DS_Store
+.idea/

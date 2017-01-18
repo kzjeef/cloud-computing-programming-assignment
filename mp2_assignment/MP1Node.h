@@ -14,6 +14,7 @@
 #include "Member.h"
 #include "EmulNet.h"
 #include "Queue.h"
+#include <memory>
 
 /**
  * Macros
@@ -29,8 +30,10 @@
  * Message Types
  */
 enum MsgTypes{
-    JOINREQ,
-    JOINREP,
+    JOINREQ,                    /* 0 */
+    JOINREP,                    /* 1 */
+    PING_AA,                    /* 2: all to all ping message. */
+    PING_AA_REP,                /* 3: all to all ping message response.  */
     DUMMYLASTMSGTYPE
 };
 
@@ -42,6 +45,11 @@ enum MsgTypes{
 typedef struct MessageHdr {
 	enum MsgTypes msgType;
 }MessageHdr;
+
+struct MessageSelfInfo {
+    char              addr_[6];
+    long              heartbeat_;
+};
 
 /**
  * CLASS NAME: MP1Node
@@ -75,7 +83,14 @@ public:
 	Address getJoinAddress();
 	void initMemberListTable(Member *memberNode);
 	void printAddress(Address *addr);
+  void sendSimpleMessageToAddress(enum MsgTypes type, Address &addr);
+    vector<MemberListEntry>::iterator
+    findMemberListEntryByAddress(const Address &addr);
+    bool
+    onReceivePingAAMessage(unique_ptr<Address> &addr, std::unique_ptr<MessageSelfInfo> &senderInfo);
 	virtual ~MP1Node();
+
+    void forwardSimpleMessage(MsgTypes type, Address &addr, Address &fromAddr, long heartbeat);
 };
 
 #endif /* _MP1NODE_H_ */

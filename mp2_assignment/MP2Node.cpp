@@ -525,7 +525,11 @@ void MP2Node::processOneMessage(Message &msg) {
       /* check if hash table has the result. */
       if (ht->count(msg.key) <= 0) {
         logServerOperation(false, msg.transID, msg.type, msg.key, msg.value);
-        replyMessage(msg.fromAddr, this->memberNode->addr, msg.transID, false);
+        if (msg.type != READ)
+          replyMessage(msg.fromAddr, this->memberNode->addr, msg.transID, false);
+        else
+          replyReadMessage(msg.fromAddr, this->memberNode->addr, msg.transID, msg.key);
+
         D("FAIL on not found trans.");
         return;
         /* next message. */
@@ -543,6 +547,7 @@ void MP2Node::processOneMessage(Message &msg) {
       break;
     case READ:
       read_result = readKey(msg.key);
+      op_res = true;
       break;
     case REPLY:
     case READREPLY:
@@ -710,6 +715,10 @@ void MP2Node::stabilizationProtocol() {
   }
 
   for (Pending_Replica &msg : pendingMessage) {
+    D("send message with %s to %s",
+      msg.second.toString().c_str(),
+      msg.first.nodeAddress.getAddress().c_str());
+
     emulNet->ENsend(&this->memberNode->addr,
                     &msg.first.nodeAddress,
                     msg.second.toString());

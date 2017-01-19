@@ -51,8 +51,8 @@ public:
   int ackedFailReplica_;
   int allReplica_;
   bool transHaveResult;
-
   vector<string> ackedReadValue_;
+
   TransState(int transId) {
     transId_ = transId;
     ackedSuccReplica_ = 0;

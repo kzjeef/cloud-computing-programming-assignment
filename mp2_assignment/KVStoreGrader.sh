@@ -213,6 +213,8 @@ GRADE=$(( ${GRADE} + ${DELETE_TEST2_SCORE} ))
 #echo "############################"
 #echo ""
 
+# exit
+
 echo ""
 echo "############################"
 echo " READ TEST"

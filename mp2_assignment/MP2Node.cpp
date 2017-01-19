@@ -653,6 +653,11 @@ int MP2Node::enqueueWrapper(void *env, char *buff, int size) {
 	Queue q;
 	return q.enqueue((queue<q_elt> *)env, (void *)buff, size);
 }
+
+// c++ move sematic.
+static Message createNodeMessage(const string &key, const string &val,  int transId, const Address &fromAddr, const ReplicaType type) {
+  return Message(transId, fromAddr, CREATE, key, val, type);
+}
 /**
  * FUNCTION NAME: stabilizationProtocol
  *
@@ -666,6 +671,32 @@ void MP2Node::stabilizationProtocol() {
 	/*
 	 * Implement this
 	 */
+
+  // check every key in it's self's hash table.
+  // if it should belongs it's self's hashtable.
+  // if belongs, send to other two replica,
+  // if not belongs, send to other three replica, and delete it's self.
+  // actually here should delete after got reply. but it's fine.
+  typedef pair<Node, Message> Pending_Replica;
+  vector<Pending_Replica> pendingMessage;
+
+  for (auto &item : ht->hashTable) {
+    const string & key = item.first;
+    const string & val = item.second;
+
+    auto replicas = findNodes(key);
+    int transId = nextTransId();
+      // not in replica, should send message to other replica.
+      for (int i = 0 ; i < replicas.size(); i++) {
+        Message m = createNodeMessage(key, val, transId, this->memberNode->addr, fromIndexToReplicaType(i));
+        pendingMessage.emplace_back(replicas[i], m);
+      }
+      // and delete it from here.
+    }
+
+
+
+  }
 
   /* TODO:  Stabilization after failure (recreate three replicas after failure). */
 }

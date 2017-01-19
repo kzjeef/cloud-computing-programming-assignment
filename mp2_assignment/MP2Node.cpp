@@ -678,27 +678,43 @@ void MP2Node::stabilizationProtocol() {
   // if not belongs, send to other three replica, and delete it's self.
   // actually here should delete after got reply. but it's fine.
   typedef pair<Node, Message> Pending_Replica;
+  int transId = nextTransId();
   vector<Pending_Replica> pendingMessage;
+  auto iter = ht->hashTable.begin();
 
-  for (auto &item : ht->hashTable) {
-    const string & key = item.first;
-    const string & val = item.second;
-
+  while(iter != ht->hashTable.end()) {
+    
+    const string & key = iter->first;
+    const string & val = iter->second;
     auto replicas = findNodes(key);
-    int transId = nextTransId();
       // not in replica, should send message to other replica.
-      for (int i = 0 ; i < replicas.size(); i++) {
-        Message m = createNodeMessage(key, val, transId, this->memberNode->addr, fromIndexToReplicaType(i));
+    for (int i = 0 ; i < replicas.size(); i++) {
+      if (!(replicas[i].nodeAddress == this->memberNode->addr)) {
+        Message m = createNodeMessage(
+                                      key, val,
+                                      transId,
+                                      this->memberNode->addr,
+                                      fromIndexToReplicaType(i));
         pendingMessage.emplace_back(replicas[i], m);
       }
-      // and delete it from here.
     }
-
-
-
+    auto pos = find_if(replicas.begin(), replicas.end(), [&](Node& n) -> bool {
+        return n.nodeAddress == this->memberNode->addr;
+      });
+    if (pos == replicas.end()) {
+      iter = ht->hashTable.erase(iter);
+    } else {
+      ++iter;
+    }
+      // and delete it from here.
   }
 
-  /* TODO:  Stabilization after failure (recreate three replicas after failure). */
+  for (Pending_Replica &msg : pendingMessage) {
+    emulNet->ENsend(&this->memberNode->addr,
+                    &msg.first.nodeAddress,
+                    msg.second.toString());
+  }
+  
 }
 
 void MP2Node::logServerOperation(bool res,  int transId, MessageType type, string &key,  string &value) {

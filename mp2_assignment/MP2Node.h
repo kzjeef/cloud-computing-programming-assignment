@@ -22,11 +22,18 @@
 #include <memory>
 #include <unordered_map>
 
+enum struct TransResult {
+	OnGoing,
+	Success,
+	Fail
+};
 
 class TransStateJudger {
 public:
-  virtual bool judgeTransState(int ackedReplica, int allReplica) = 0;
+  virtual TransResult judgeTransState(int ackedSuccReplica, int ackedFailReplica, int allReplica) = 0;
 };
+
+
 
 /**
  * Coordinator side class maintain the state of each transition.
@@ -40,14 +47,16 @@ public:
   string      value_;
   MessageType type_;
 
-  int ackedReplica_;
+  int ackedSuccReplica_;
+  int ackedFailReplica_;
   int allReplica_;
-  bool transSuccess_;
+  bool transHaveResult;
 
   vector<string> ackedReadValue_;
   TransState(int transId) {
     transId_ = transId;
-    ackedReplica_ = 0;
+    ackedSuccReplica_ = 0;
+		ackedFailReplica_ = 0;
     allReplica_ = 0;
   }
 
@@ -59,26 +68,24 @@ public:
     key_ = key;
     value_ = value;
     type_ = type;
-    transSuccess_ = false;
+    transHaveResult = false;
   }
 
   string getKey() { return key_; }
   string getValue() { return value_; }
   string getReadValue() {return ackedReadValue_[0]; }
 
-  int getAllReplica() { return allReplica_; }
-  int getAckedReplica() { return ackedReplica_; }
   MessageType getType () { return type_; }
 
-  void markTransSuccess() { transSuccess_ = true; }
-  bool transSuccess() { return transSuccess_; }
-  bool isAllReplyGot() { return allReplica_ == ackedReplica_; }
+  void markTransHaveResult() { transHaveResult = true; }
+  bool transResult() { return transHaveResult; }
+  bool isAllReplyGot() { return allReplica_ == (ackedSuccReplica_ + ackedFailReplica_); }
 
-  void onOneReplicaAcked() { ++ackedReplica_; }
-  void onOneReadReplicaAcked(const string &value) { ++ackedReplica_; ackedReadValue_.push_back(value); }
+  void onOneReplicaAcked(bool succ) { if (succ) {++ackedSuccReplica_; } else {++ackedFailReplica_; }; }
+  void onOneReadReplicaAcked(const string &value) { ++ackedSuccReplica_; ackedReadValue_.push_back(value); }
   void onOneReplicaSend() { ++allReplica_; }
-  bool checkSatisifyReplica(TransStateJudger *judger) {
-    return judger->judgeTransState(ackedReplica_, allReplica_);
+  TransResult checkSatisifyReplica(TransStateJudger *judger) {
+    return judger->judgeTransState(ackedSuccReplica_, ackedFailReplica_, allReplica_);
   }
 };
 

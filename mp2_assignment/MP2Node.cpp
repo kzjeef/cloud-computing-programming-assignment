@@ -7,7 +7,7 @@
 
 #include <algorithm>
 
-//#define VERBOSE
+#define VERBOSE
 
 #ifdef VERBOSE
 
@@ -16,12 +16,16 @@
 #define D(...) do {} while(0)
 #endif
 
+
+
 class QuorumStateJudger : public TransStateJudger {
-  virtual bool judgeTransState(int ackedReplica, int all);
+  virtual TransResult judgeTransState(int ackedSuccReplica, int ackedFailReplica, int allReplica);
 };
 
-bool QuorumStateJudger::judgeTransState(int acked, int all) {
-  return acked * 2 > all;
+TransResult QuorumStateJudger::judgeTransState(int SuccAcked, int FailAcked, int all) {
+  if ((SuccAcked * 2 ) > all)  return TransResult::Success;
+  if ((FailAcked * 2)  > all)  return TransResult::Fail;
+  else return TransResult::OnGoing;
 }
 
 static QuorumStateJudger g_QuorumJudger;
@@ -238,43 +242,60 @@ void MP2Node::coordinatorGotMessage(Message &msg) {
   auto trans = onGoingTrans_[msg.transID];
 
   if (msg.type == REPLY) {
-    trans->onOneReplicaAcked();
-    if (trans->checkSatisifyReplica(&g_QuorumJudger)) {
-      if (!trans->transSuccess()) {
-        trans->markTransSuccess();
-        /* first succes, we print log. */
+    trans->onOneReplicaAcked(msg.success);
+    TransResult result  = trans->checkSatisifyReplica(&g_QuorumJudger);
+    if ( result != TransResult::OnGoing) {
+      if (!trans->transResult()) {
+        trans->markTransHaveResult();
         switch(trans->getType()) {
         case CREATE:
-          log->logCreateSuccess(&this->memberNode->addr, true, msg.transID, trans->getKey(), trans->getValue());
+          if (result == TransResult::Success)
+            log->logCreateSuccess(&this->memberNode->addr, true, msg.transID, trans->getKey(), trans->getValue());
+          else
+            log->logCreateFail(&this->memberNode->addr, true, msg.transID, trans->getKey(), trans->getValue());
           break;
         case UPDATE:
-          log->logUpdateSuccess(&this->memberNode->addr, true, msg.transID, trans->getKey(), trans->getValue());
+          if (result == TransResult::Success)
+            log->logUpdateSuccess(&this->memberNode->addr, true, msg.transID, trans->getKey(), trans->getValue());
+          else
+            log->logUpdateFail(&this->memberNode->addr, true, msg.transID, trans->getKey(), trans->getValue());
           break;
         case DELETE:
-          log->logDeleteSuccess(&this->memberNode->addr, true, msg.transID, trans->getKey());
+          if (result == TransResult::Success)
+            log->logDeleteSuccess(&this->memberNode->addr, true, msg.transID, trans->getKey());
+          else
+            log->logDeleteFail(&this->memberNode->addr, true, msg.transID, trans->getKey());
           break;
         default:
           break;
         }
       } else {
         if (trans->isAllReplyGot()) {
-          onGoingTrans_.erase(msg.transID);
+          //onGoingTrans_.erase(msg.transID);
         }
       } 
     }
   } else if (msg.type == READREPLY) {
     /* push read message to list. */
-    trans->onOneReadReplicaAcked(msg.value);
-    if (trans->checkSatisifyReplica(&g_QuorumJudger) == true) {
-      if (!trans->transSuccess()) {
-        trans->markTransSuccess();
-        log->logReadSuccess(&this->memberNode->addr,true, msg.transID, trans->getKey(), trans->getReadValue());
+    if (msg.success == true)
+      trans->onOneReadReplicaAcked(msg.value);
+    else
+      trans->onOneReplicaAcked(false);
+    TransResult result = trans->checkSatisifyReplica(&g_QuorumJudger);
+    if (result != TransResult::OnGoing) {
+      if (!trans->transResult()) {
+        trans->markTransHaveResult();
+        if (result == TransResult::Success)
+          log->logReadSuccess(&this->memberNode->addr,true, msg.transID, trans->getKey(), trans->getReadValue());
+        else
+          log->logReadFail(&this->memberNode->addr,true, msg.transID, trans->getKey());
       } else {
         if (trans->isAllReplyGot()) {
-          onGoingTrans_.erase(msg.transID);
+          //onGoingTrans_.erase(msg.transID);
         }
       }
     }
+
   } else {
     abort();
   }
@@ -503,7 +524,9 @@ void MP2Node::processOneMessage(Message &msg) {
     if (msg.type == READ || msg.type == UPDATE || msg.type == DELETE) {
       /* check if hash table has the result. */
       if (ht->count(msg.key) <= 0) {
-        replyMessage(msg.fromAddr, this->memberNode->addr, false, msg.transID);
+        logServerOperation(false, msg.transID, msg.type, msg.key, msg.value);
+        replyMessage(msg.fromAddr, this->memberNode->addr, msg.transID, false);
+        D("FAIL on not found trans.");
         return;
         /* next message. */
       }
@@ -553,11 +576,6 @@ void MP2Node::checkMessages() {
 	char * data;
 	int size;
 
-	/*
-	 * Declare your local variables here
-	 */
-
-
 	// dequeue all messages and handle them
 	while ( !memberNode->mp2q.empty() ) {
 		/*
@@ -570,6 +588,7 @@ void MP2Node::checkMessages() {
 		string message(data, data + size);
     Message msg(message);
     D("------------------------------");
+    D("Recv: %s", msg.toString().c_str());
     processOneMessage(msg);
 	}
 

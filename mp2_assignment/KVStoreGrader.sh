@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/bash 
 
 #################################################
 # FILE NAME: KVStoreGrader.sh
@@ -87,6 +87,8 @@ create_count=`grep -i "${CREATE_OPERATION}" dbg.log | wc -l`
 create_success_count=`grep -i "${CREATE_SUCCESS}" dbg.log | wc -l`
 expected_count=$(( ${create_count} * ${RFPLUSONE} ))
 
+echo "expected count: ${expected_count}  create_count: ${create_success_count}"
+
 if [ ${create_success_count} -ne ${expected_count} ]
 then 
 	CREATE_TEST_STATUS="${FAILURE}"
@@ -112,6 +114,8 @@ fi
 echo "TEST 1 SCORE..................: ${CREATE_TEST_SCORE} / 3"
 # Add to grade
 GRADE=$(( ${GRADE} + ${CREATE_TEST_SCORE} ))
+
+#// exit
 
 #echo ""
 #echo "############################"

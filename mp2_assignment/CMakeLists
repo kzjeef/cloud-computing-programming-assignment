@@ -1,0 +1,10 @@
+cmake_minimum_required(VERSION 3.6)
+project(MP2)
+
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11 -Wall -g")
+
+set(SOURCE_FILES 
+Application.cpp	Entry.cpp	Log.cpp		MP2Node.cpp	Message.cpp	Params.cpp
+EmulNet.cpp	HashTable.cpp	MP1Node.cpp	Member.cpp	Node.cpp	Trace.cpp
+)
+add_executable(Application ${SOURCE_FILES})

@@ -168,6 +168,9 @@ public:
 	void stabilizationProtocol();
 
 	~MP2Node();
+
+    void logServerOperation(bool res,  int transId, MessageType type, string &key,  string &value);
+
 };
 
 #endif /* MP2NODE_H_ */

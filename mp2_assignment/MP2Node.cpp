@@ -7,6 +7,14 @@
 
 #include <algorithm>
 
+//#define VERBOSE
+
+#ifdef VERBOSE
+
+#define D(...) log->LOG(&this->memberNode->addr, __VA_ARGS__)
+#else
+#define D(...) do {} while(0)
+#endif
 
 class QuorumStateJudger : public TransStateJudger {
   virtual bool judgeTransState(int ackedReplica, int all);
@@ -195,13 +203,16 @@ void MP2Node::coordinatorSendMessage(Address &addr,
   // include, do the location, and update the coordinator's state, just like got
   // the message, and send back the reply.
 
+  D("coordinatorSendMessage: msg: %s to %s", msg->toString().c_str(), targetAddr.getAddress().c_str());
+
   if (onGoingTrans_.count(msg->transID) > 0) {
     auto trans = onGoingTrans_[msg->transID];
     trans->onOneReplicaSend();
   } else {
     auto trans = TransState::transState(msg->transID);
     trans->setKeyValue(msg->key, msg->value, msg->type); /* TODO: some message don't have value. can be refiner. */
-    onGoingTrans_.emplace(msg->transID, trans);
+    onGoingTrans_.insert(make_pair(msg->transID, trans));
+    D("trans: %d -> %p ", msg->transID, trans.get());
   }
 
   if (this->memberNode->addr == targetAddr) {
@@ -217,10 +228,12 @@ void MP2Node::coordinatorSendMessage(Address &addr,
 
 void MP2Node::coordinatorGotMessage(Message &msg) {
   /* update the transion id table. */
-  if (onGoingTrans_.count(msg.transID) <= 0) {
+  if (onGoingTrans_.count(msg.transID) == 0) {
     log->LOG(&this->memberNode->addr, "Error: wrong message with transId got: %d", msg.transID);
     return;
   }
+
+  D("coordinatorGotMessage.... %s", msg.toString().c_str());
 
   auto trans = onGoingTrans_[msg.transID];
 
@@ -302,7 +315,13 @@ void MP2Node::clientCreate(string key, string value) {
   vector<Node> replicas  = findNodes(key);
   int transId = nextTransId();
 
+  D("replica size:%d", replicas.size());
+  for(auto rep : replicas) {
+
+  }
+
   for (int i = 0; i < replicas.size() ; i++) {
+
     unique_ptr<Message> msg(new Message(transId,
                                         this->memberNode->addr,
                                         CREATE,
@@ -311,6 +330,7 @@ void MP2Node::clientCreate(string key, string value) {
                                         fromIndexToReplicaType(i)));
     coordinatorSendMessage(this->memberNode->addr, replicas[i].nodeAddress, msg);
   }
+  D("-----------------------------------------------------------------------");
 }
 
 /**
@@ -507,9 +527,11 @@ void MP2Node::processOneMessage(Message &msg) {
       break;
     }
 
+    logServerOperation(op_res, msg.transID, msg.type, msg.key, msg.type == READ ? read_result : msg.value);
+
     if (msg.type != REPLY && msg.type != READREPLY) {
       if (msg.type != READ) 
-        replyMessage(msg.fromAddr, this->memberNode->addr, op_res, msg.transID);
+        replyMessage(msg.fromAddr, this->memberNode->addr,  msg.transID , op_res);
       else
         replyReadMessage(msg.fromAddr, this->memberNode->addr, msg.transID, read_result);
     }
@@ -547,8 +569,8 @@ void MP2Node::checkMessages() {
 
 		string message(data, data + size);
     Message msg(message);
-  
-
+    D("------------------------------");
+    processOneMessage(msg);
 	}
 
 	/*
@@ -627,4 +649,36 @@ void MP2Node::stabilizationProtocol() {
 	 */
 
   /* TODO:  Stabilization after failure (recreate three replicas after failure). */
+}
+
+void MP2Node::logServerOperation(bool res,  int transId, MessageType type, string &key,  string &value) {
+        switch (type) {
+          case CREATE:
+                if (res)
+                    log->logCreateSuccess(&this->memberNode->addr, false, transId, key, value);
+                else
+                    log->logCreateFail(&this->memberNode->addr, false, transId, key, value);
+                break;
+            case UPDATE:
+                if (res)
+                    log->logUpdateSuccess(&this->memberNode->addr, false, transId, key, value);
+                else
+                    log->logUpdateFail(&this->memberNode->addr, false, transId, key, value);
+                break;
+            case DELETE:
+                if (res)
+                    log->logDeleteSuccess(&this->memberNode->addr, false, transId, key);
+                else
+                    log->logDeleteFail(&this->memberNode->addr, false, transId, key);
+
+                break;
+            case READ:
+                if (res)
+                    log->logReadSuccess(&this->memberNode->addr, false, transId, key, value);
+                else
+                    log->logReadFail(&this->memberNode->addr, false, transId, key);
+                break;
+            default:
+                break;
+        }
 }

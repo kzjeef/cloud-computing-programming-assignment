@@ -21,6 +21,7 @@
 
 #include <memory>
 #include <unordered_map>
+#include <set>
 
 enum struct TransResult {
 	OnGoing,
@@ -28,12 +29,34 @@ enum struct TransResult {
 	Fail
 };
 
+class TransState;
+
 class TransStateJudger {
 public:
-  virtual TransResult judgeTransState(int ackedSuccReplica, int ackedFailReplica, int allReplica) = 0;
+  virtual TransResult judgeTransState(TransState *state) = 0;
 };
 
 
+class TransReplicaStatus {
+public:
+  bool replyed_;  /// already got the replica message replyed
+  bool success_;  /// the message was success or not.
+  long sendTime_; /// time of send the message
+  TransReplicaStatus() {
+    replyed_ = false;
+    success_ = false;
+    sendTime_ = -1;
+  }
+
+  static
+  unique_ptr<TransReplicaStatus>
+      transReplicaStatusOf(long sendTime) {
+    auto ret = unique_ptr<TransReplicaStatus>(new TransReplicaStatus());
+    ret->sendTime_ = sendTime;
+    return ret;
+  }
+
+};
 
 /**
  * Coordinator side class maintain the state of each transition.
@@ -51,7 +74,8 @@ public:
   int ackedFailReplica_;
   int allReplica_;
   bool transHaveResult;
-  vector<string> ackedReadValue_;
+  map<string, int> ackedReadValue_;
+  map<string, unique_ptr<TransReplicaStatus> > replicaAddrs_;
 
   TransState(int transId) {
     transId_ = transId;
@@ -73,7 +97,10 @@ public:
 
   string getKey() { return key_; }
   string getValue() { return value_; }
-  string getReadValue() {return ackedReadValue_[0]; }
+  string getReadValue() {
+    /* Find the max value object in set. */
+    return max_element(ackedReadValue_.begin(), ackedReadValue_.end())->first;
+  }
 
   MessageType getType () { return type_; }
 
@@ -81,11 +108,33 @@ public:
   bool transResult() { return transHaveResult; }
   bool isAllReplyGot() { return allReplica_ == (ackedSuccReplica_ + ackedFailReplica_); }
 
-  void onOneReplicaAcked(bool succ) { if (succ) {++ackedSuccReplica_; } else {++ackedFailReplica_; }; }
-  void onOneReadReplicaAcked(const string &value) { ++ackedSuccReplica_; ackedReadValue_.push_back(value); }
-  void onOneReplicaSend() { ++allReplica_; }
+  void onOneReplicaAcked(const string &address, long currentTime, bool succ) {
+    replicaAddrs_[address]->success_ = succ;
+    replicaAddrs_[address]->replyed_ = true;
+    if (succ) {
+        ++ackedSuccReplica_;
+    } else {
+      ++ackedFailReplica_;
+    };
+  }
+
+  void onOneReadReplicaAcked(const string &address, long currentTime, const string &value) {
+    replicaAddrs_[address]->success_ = true;
+    replicaAddrs_[address]->replyed_ = true;
+    ++ackedSuccReplica_;
+    if (ackedReadValue_.count(value) > 0)
+      ++ackedReadValue_[value];
+    else
+      ackedReadValue_.emplace(value, 0);
+  }
+
+  void onOneReplicaSend(const string &address, long currentTime) {
+    ++allReplica_;
+    replicaAddrs_.insert(make_pair(address, TransReplicaStatus::transReplicaStatusOf(currentTime)));
+  }
+
   TransResult checkSatisifyReplica(TransStateJudger *judger) {
-    return judger->judgeTransState(ackedSuccReplica_, ackedFailReplica_, allReplica_);
+    return judger->judgeTransState(this);
   }
 };
 
@@ -178,6 +227,7 @@ public:
 
     void logServerOperation(bool res,  int transId, MessageType type, string &key,  string &value);
 
+  void checkTimeoutTransaction();
 };
 
 #endif /* MP2NODE_H_ */

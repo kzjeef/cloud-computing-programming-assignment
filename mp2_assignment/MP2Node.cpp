@@ -7,7 +7,7 @@
 
 #include <algorithm>
 
-#define VERBOSE
+//#define VERBOSE
 
 #ifdef VERBOSE
 
@@ -16,16 +16,43 @@
 #define D(...) do {} while(0)
 #endif
 
-
+#define REPLICA_CREATE_TRANS_ID -255
 
 class QuorumStateJudger : public TransStateJudger {
-  virtual TransResult judgeTransState(int ackedSuccReplica, int ackedFailReplica, int allReplica);
+  virtual TransResult judgeTransState(TransState *state);
 };
 
-TransResult QuorumStateJudger::judgeTransState(int SuccAcked, int FailAcked, int all) {
-  if ((SuccAcked * 2 ) > all)  return TransResult::Success;
-  if ((FailAcked * 2)  > all)  return TransResult::Fail;
-  else return TransResult::OnGoing;
+TransResult QuorumStateJudger::judgeTransState(TransState *state) {
+  int all = state->allReplica_;
+  if (all < 3) {
+    // at least 3 replica.
+    return TransResult ::OnGoing;
+  }
+
+  if ((state->ackedFailReplica_ * 2)  > all)
+    return TransResult::Fail;
+
+  if ((state->ackedSuccReplica_ * 2 ) > all) {
+    if (state->type_ != READ)
+      return TransResult ::Success;
+
+    // for read need more check.
+    // the read value needs agree on same value.
+    if (state->ackedReadValue_.size() == 1) {
+      return TransResult::Success;
+    } else  {
+      for (auto &kp : state->ackedReadValue_) {
+        if (kp.second * 2 > all)
+          return TransResult::Success;
+      }
+      /* not find a qorum value. */
+      if (state->ackedSuccReplica_ + state->ackedFailReplica_ >= all)
+        return TransResult::Fail;
+      else
+        return TransResult::OnGoing;
+    }
+  } else
+    return TransResult::OnGoing;
 }
 
 static QuorumStateJudger g_QuorumJudger;
@@ -211,10 +238,11 @@ void MP2Node::coordinatorSendMessage(Address &addr,
 
   if (onGoingTrans_.count(msg->transID) > 0) {
     auto trans = onGoingTrans_[msg->transID];
-    trans->onOneReplicaSend();
+    trans->onOneReplicaSend(targetAddr.getAddress(), par->getcurrtime());
   } else {
     auto trans = TransState::transState(msg->transID);
     trans->setKeyValue(msg->key, msg->value, msg->type); /* TODO: some message don't have value. can be refiner. */
+    trans->onOneReplicaSend(targetAddr.getAddress(), par->getcurrtime());
     onGoingTrans_.insert(make_pair(msg->transID, trans));
     D("trans: %d -> %p ", msg->transID, trans.get());
   }
@@ -222,6 +250,7 @@ void MP2Node::coordinatorSendMessage(Address &addr,
   if (this->memberNode->addr == targetAddr) {
     processOneMessage(*msg);
   } else {
+    // needs check if the address in member list.
     emulNet->ENsend(&this->memberNode->addr,
                     &targetAddr,
                     msg->toString());
@@ -232,7 +261,8 @@ void MP2Node::coordinatorSendMessage(Address &addr,
 
 void MP2Node::coordinatorGotMessage(Message &msg) {
   /* update the transion id table. */
-  if (onGoingTrans_.count(msg.transID) == 0) {
+
+  if (onGoingTrans_.count(msg.transID) == 0 && msg.transID != REPLICA_CREATE_TRANS_ID) {
     log->LOG(&this->memberNode->addr, "Error: wrong message with transId got: %d", msg.transID);
     return;
   }
@@ -240,10 +270,20 @@ void MP2Node::coordinatorGotMessage(Message &msg) {
   D("coordinatorGotMessage.... %s", msg.toString().c_str());
 
   auto trans = onGoingTrans_[msg.transID];
+  if (trans == nullptr)
+    return;
+  if (msg.transID == REPLICA_CREATE_TRANS_ID)
+    return;
 
-  if (msg.type == REPLY) {
-    trans->onOneReplicaAcked(msg.success);
-    TransResult result  = trans->checkSatisifyReplica(&g_QuorumJudger);
+  TransResult result;
+  if (msg.type == REPLY || msg.type == READREPLY) {
+
+    if (trans->type_ == READ && msg.type == READREPLY) {
+      trans->onOneReadReplicaAcked(msg.fromAddr.getAddress(), par->getcurrtime(), msg.value);
+    } else {
+      trans->onOneReplicaAcked(msg.fromAddr.getAddress(), par->getcurrtime(), msg.success);
+    }
+    result  = trans->checkSatisifyReplica(&g_QuorumJudger);
     if ( result != TransResult::OnGoing) {
       if (!trans->transResult()) {
         trans->markTransHaveResult();
@@ -265,7 +305,14 @@ void MP2Node::coordinatorGotMessage(Message &msg) {
             log->logDeleteSuccess(&this->memberNode->addr, true, msg.transID, trans->getKey());
           else
             log->logDeleteFail(&this->memberNode->addr, true, msg.transID, trans->getKey());
-          break;
+            break;
+          case READ:
+            /* push read message to list. */
+            if (result == TransResult::Success)
+              log->logReadSuccess(&this->memberNode->addr,true, msg.transID, trans->getKey(), trans->getReadValue());
+            else
+              log->logReadFail(&this->memberNode->addr,true, msg.transID, trans->getKey());
+            break;
         default:
           break;
         }
@@ -273,29 +320,8 @@ void MP2Node::coordinatorGotMessage(Message &msg) {
         if (trans->isAllReplyGot()) {
           //onGoingTrans_.erase(msg.transID);
         }
-      } 
-    }
-  } else if (msg.type == READREPLY) {
-    /* push read message to list. */
-    if (msg.success == true)
-      trans->onOneReadReplicaAcked(msg.value);
-    else
-      trans->onOneReplicaAcked(false);
-    TransResult result = trans->checkSatisifyReplica(&g_QuorumJudger);
-    if (result != TransResult::OnGoing) {
-      if (!trans->transResult()) {
-        trans->markTransHaveResult();
-        if (result == TransResult::Success)
-          log->logReadSuccess(&this->memberNode->addr,true, msg.transID, trans->getKey(), trans->getReadValue());
-        else
-          log->logReadFail(&this->memberNode->addr,true, msg.transID, trans->getKey());
-      } else {
-        if (trans->isAllReplyGot()) {
-          //onGoingTrans_.erase(msg.transID);
-        }
       }
     }
-
   } else {
     abort();
   }
@@ -303,7 +329,11 @@ void MP2Node::coordinatorGotMessage(Message &msg) {
 }
 
 int MP2Node::nextTransId() {
-  return g_transID++;
+  if (g_transID + 1 > 0)
+    return g_transID++;
+  else
+    g_transID = 1;
+  return g_transID;
 }
 
 static ReplicaType fromIndexToReplicaType(int i) {
@@ -369,6 +399,9 @@ void MP2Node::clientRead(string key){
 	 */
   vector<Node> replicas  = findNodes(key);
   int transId = nextTransId();
+  if (replicas.size() < 3) {
+    cout << "not enough repliace." << endl;
+  }
   for (int i = 0; i < replicas.size() ; i++) {
     unique_ptr<Message> msg(new Message(transId,
                                         this->memberNode->addr,
@@ -555,7 +588,8 @@ void MP2Node::processOneMessage(Message &msg) {
       break;
     }
 
-    logServerOperation(op_res, msg.transID, msg.type, msg.key, msg.type == READ ? read_result : msg.value);
+    if (msg.transID != REPLICA_CREATE_TRANS_ID)
+      logServerOperation(op_res, msg.transID, msg.type, msg.key, msg.type == READ ? read_result : msg.value);
 
     if (msg.type != REPLY && msg.type != READREPLY) {
       if (msg.type != READ) 
@@ -601,6 +635,10 @@ void MP2Node::checkMessages() {
 	 * This function should also ensure all READ and UPDATE operation
 	 * get QUORUM replies
 	 */
+
+  // In this loop, check if there is some time-out transion.
+
+  checkTimeoutTransaction();
 }
 
 /**
@@ -697,7 +735,7 @@ void MP2Node::stabilizationProtocol() {
       if (!(replicas[i].nodeAddress == this->memberNode->addr)) {
         Message m = createNodeMessage(
                                       key, val,
-                                      transId,
+                                      REPLICA_CREATE_TRANS_ID,
                                       this->memberNode->addr,
                                       fromIndexToReplicaType(i));
         pendingMessage.emplace_back(replicas[i], m);
@@ -756,4 +794,32 @@ void MP2Node::logServerOperation(bool res,  int transId, MessageType type, strin
             default:
                 break;
         }
+}
+
+#define kTimeOutThreshold 1
+void MP2Node::checkTimeoutTransaction() {
+  auto iter = this->onGoingTrans_.begin();
+  long currentTime = par->getcurrtime();
+
+  while(iter != this->onGoingTrans_.end()) {
+    int transId = iter->first;
+    auto trandStatePtr = iter->second;
+
+    if (trandStatePtr != nullptr) {
+      auto replicaTransIter = trandStatePtr->replicaAddrs_.begin();
+      while (replicaTransIter != trandStatePtr->replicaAddrs_.end()) {
+        if (!replicaTransIter->second->replyed_
+            && replicaTransIter->second->sendTime_ != -1
+            && (currentTime - replicaTransIter->second->sendTime_) > kTimeOutThreshold) {
+          /* already timeout. */
+          /* emulate a message */
+          Address fakeFrom(replicaTransIter->first);
+          Message msg(iter->first, fakeFrom, iter->second->type_ == READ ? REPLY : REPLY, false);
+          emulNet->ENsend(&fakeFrom, &this->memberNode->addr, msg.toString());
+        }
+        ++replicaTransIter;
+      }
+    }
+    ++iter;
+  }
 }
